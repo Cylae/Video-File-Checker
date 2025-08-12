@@ -27,6 +27,20 @@ $logBuffer = [System.Collections.Generic.List[string]]::new()
 
 # --- Functions ---
 
+# Function to display the script's startup banner
+function Show-Banner {
+    $banner = @"
+   ██████╗ ██╗   ██╗ ██╗      █████╗ ███████╗
+  ██╔════╝ ██║   ██║ ██║     ██╔══██╗██╔════╝
+  ██║      ██║   ██║ ██║     ███████║█████╗
+  ██║      ╚██╗ ██╔╝ ██║     ██╔══██║██╔══╝
+  ╚██████╗ ╚████╔╝  ███████╗██║  ██║███████╗
+   ╚═════╝  ╚═══╝   ╚══════╝╚═╝  ╚═╝╚══════╝
+"@
+    Write-Host $banner -ForegroundColor Cyan
+    Write-Host ""
+}
+
 # Function to write logs to a file (stores in memory first)
 function Write-Log {
     param(
@@ -210,7 +224,7 @@ function Select-Folder {
 trap {
     # This block runs if the user presses Ctrl+C or an error occurs
     Write-Host "`nStopping current tasks..." -ForegroundColor Red
-    $jobs | Stop-Job -Force -ErrorAction SilentlyContinue
+    $jobs | Stop-Job -ErrorAction SilentlyContinue
     $jobs | Wait-Job | Out-Null
     $jobs | Remove-Job
     Write-AllLogs
@@ -221,6 +235,9 @@ trap {
     exit
 }
 # --- End of interruption and error handling block ---
+
+# Show the startup banner
+Show-Banner
 
 # Step 0: Check for existing FFmpeg processes
 Write-Host "Checking for existing FFmpeg processes..." -ForegroundColor White
