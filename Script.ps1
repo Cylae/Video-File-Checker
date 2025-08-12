@@ -1,31 +1,223 @@
+# --- Pre-flight Checks ---
+if ($PSVersionTable.PSVersion.Major -lt 4) {
+    Write-Error "PowerShell 4.0 or higher is required to run this script (for the Get-FileHash cmdlet). Your current version is $($PSVersionTable.PSVersion). Please upgrade and try again."
+    if ($Host.Name -eq "ConsoleHost") { Read-Host "Press Enter to exit" }
+    exit
+}
+
 # Set console encoding to UTF-8 for special characters (emojis)
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 # --- Configuration ---
-$config = @{
-    # List of video file extensions to check (add or remove as needed)
-    VideoExtensions = @('.mkv', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm');
+# Function to load settings from config.json
+function Load-Config {
+    $configPath = Join-Path -Path $PSScriptRoot -ChildPath "config.json"
+    if (Test-Path $configPath) {
+        try {
+            $config = Get-Content -Path $configPath -Raw | ConvertFrom-Json
 
-    # Download URLs for dependencies
-    FFmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-git-full.7z";
-    SevenZipUrl = "https://www.7-zip.org/a/7z2301-extra.zip";
+            # --- Config Migration/Defaults ---
+            # This ensures that if the script is updated but the user has an old config file,
+            # the script will not fail and will use default values for new settings.
+            if (-not $config.PSObject.Properties.Name.Contains('Performance')) {
+                $config | Add-Member -MemberType NoteProperty -Name 'Performance' -Value @{ MaxConcurrentJobs = 0 }
+            }
+            if (-not $config.Performance.PSObject.Properties.Name.Contains('MaxConcurrentJobs')) {
+                $config.Performance | Add-Member -MemberType NoteProperty -Name 'MaxConcurrentJobs' -Value 0
+            }
+            if (-not $config.PSObject.Properties.Name.Contains('UI')) {
+                $config | Add-Member -MemberType NoteProperty -Name 'UI' -Value @{ ShowBanner = $true }
+            }
+            if (-not $config.UI.PSObject.Properties.Name.Contains('ShowBanner')) {
+                $config.UI | Add-Member -MemberType NoteProperty -Name 'ShowBanner' -Value $true
+            }
+            # --- End Config Migration ---
 
-    # --- Performance Settings ---
-    # Set the maximum number of concurrent jobs.
-    # By default, it leaves one core free for system stability, with a max cap of 8.
-    MaxConcurrentJobs = [System.Math]::Min([int](((Get-CimInstance Win32_Processor).NumberOfLogicalProcessors) - 1), 8);
+            # Handle auto-detection of MaxConcurrentJobs
+            if ($config.Performance.MaxConcurrentJobs -le 0) {
+                # Auto-set: leaves one core free, with a max cap of 8.
+                $detectedJobs = [System.Math]::Min([int](((Get-CimInstance Win32_Processor).NumberOfLogicalProcessors) - 1), 8)
+                $config.Performance.MaxConcurrentJobs = if ($detectedJobs -lt 1) { 1 } else { $detectedJobs }
+            }
+            return $config
+        } catch {
+            Write-Host "Error reading or parsing config.json. $($_.Exception.Message)" -ForegroundColor Red
+            # Fallback to default settings if config is corrupted
+            return Get-DefaultConfig
+        }
+    } else {
+        # If the file doesn't exist, create it with default values
+        Write-Host "config.json not found. Creating a default configuration file." -ForegroundColor Yellow
+        $defaultConfig = Get-DefaultConfig
+        # Auto-set MaxConcurrentJobs for the default config as well
+        $detectedJobs = [System.Math]::Min([int](((Get-CimInstance Win32_Processor).NumberOfLogicalProcessors) - 1), 8)
+        $defaultConfig.Performance.MaxConcurrentJobs = if ($detectedJobs -lt 1) { 1 } else { $detectedJobs }
+
+        $defaultConfig | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding UTF8
+        return $defaultConfig
+    }
 }
-# Ensure at least one job runs if detection fails or on a single-core system
-if ($config.MaxConcurrentJobs -lt 1) { $config.MaxConcurrentJobs = 1 }
 
+# Function to get the default configuration settings
+function Get-DefaultConfig {
+    return [PSCustomObject]@{
+        FFmpegSettings = @{
+            DownloadUrl = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-git-full.7z'
+            # WARNING: The CustomCommand is executed via Invoke-Expression, which can be a security risk.
+            # Only use commands from trusted sources. Ensure the command correctly handles file paths with spaces,
+            # for example by enclosing "{filePath}" in quotes within the command string.
+            CustomCommand = 'ffmpeg -v error -i "{filePath}" -f null -'
+            Examples_CustomCommands = @{
+                NVIDIA_GPU = 'ffmpeg -hwaccel cuda -i "{filePath}" -f null -'
+                AMD_GPU = 'ffmpeg -hwaccel amf -i "{filePath}" -f null -'
+                Intel_GPU = 'ffmpeg -hwaccel qsv -i "{filePath}" -f null -'
+            }
+        }
+        SevenZipUrl = 'https://www.7-zip.org/a/7z2301-extra.zip'
+        Performance = @{
+            MaxConcurrentJobs = 0
+        }
+        Language = "en"
+        CorruptedFileAction = @{
+            Action = "Delete"
+            MovePath = "_CorruptedFiles"
+        }
+        DuplicateFileCheck = @{
+            Enabled = $false
+        }
+        VideoExtensions = @(
+            ".mkv", ".mp4", ".avi", ".mov",
+            ".wmv", ".flv", ".webm"
+        )
+        UI = @{
+            ShowBanner = $true
+        }
+    }
+}
 
-# Define global variables for the script
+# Load the configuration
+$config = Load-Config
+
+# --- Language & Localization ---
+# Function to load language strings from a .json file
+function Load-Language {
+    param($langCode)
+    $langFilePath = Join-Path -Path $PSScriptRoot -ChildPath "$langCode.json"
+    # Default to English if the specified language file doesn't exist
+    if (-not (Test-Path $langFilePath)) {
+        Write-Host "Language file '$langCode.json' not found. Falling back to English." -ForegroundColor Yellow
+        $langCode = "en"
+        $langFilePath = Join-Path -Path $PSScriptRoot -ChildPath "en.json"
+    }
+    # If even en.json is missing, exit
+    if (-not (Test-Path $langFilePath)) {
+        Write-Host "FATAL: Default language file 'en.json' is missing. The script cannot continue." -ForegroundColor Red
+        Read-Host "Press Enter to exit."
+        exit
+    }
+    try {
+        return Get-Content -Path $langFilePath -Raw | ConvertFrom-Json
+    } catch {
+        Write-Host "FATAL: Error reading or parsing '$($langFilePath)'. $($_.Exception.Message)" -ForegroundColor Red
+        Read-Host "Press Enter to exit."
+        exit
+    }
+}
+
+# Load the language strings based on config
+$lang = Load-Language -langCode $config.Language
+
+# Function to get a localized string
+function Get-String {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Key,
+        [object[]]$FormatArgs
+    )
+    $template = $lang.$Key
+    if ($null -ne $template) {
+        if ($FormatArgs) {
+            return [string]::Format($template, $FormatArgs)
+        } else {
+            return $template
+        }
+    } else {
+        # Fallback for missing keys
+        return "[$Key NOT FOUND]"
+    }
+}
+
+# --- Global Variables ---
 $corruptedFiles = @()
 $deletedFiles = @()
+$movedFiles = @()
+$duplicateFiles = @{}
 $logBuffer = [System.Collections.Generic.List[string]]::new()
 
 # --- Functions ---
+
+# Function to show the script banner
+function Show-Banner {
+    if ($config.UI.ShowBanner) {
+        $bannerInfo = @{
+            Name = "Video File Integrity Checker"
+            Version = "2.0"
+            ReleaseDate = "2023-10-27"
+            Link = "https://github.com/your-username/your-repo"
+        }
+        Write-Host "================================================================"
+        Write-Host ((Get-String -Key 'banner_name' -FormatArgs $bannerInfo.Name))
+        Write-Host ((Get-String -Key 'banner_version' -FormatArgs $bannerInfo.Version))
+        Write-Host ((Get-String -Key 'banner_release_date' -FormatArgs $bannerInfo.ReleaseDate))
+        Write-Host ((Get-String -Key 'banner_link' -FormatArgs $bannerInfo.Link))
+        Write-Host "================================================================"
+        Write-Host ""
+    }
+}
+
+# Function to find duplicate files based on their hash
+function Find-DuplicateFiles {
+    param(
+        [Parameter(Mandatory=$true)]
+        [System.Array]$Files
+    )
+    Write-Host (Get-String -Key 'starting_duplicate_check') -ForegroundColor Cyan
+    $hashes = @{}
+    $checkedCount = 0
+    $totalCount = $Files.Count
+
+    foreach ($file in $Files) {
+        $checkedCount++
+        Write-Progress -Activity (Get-String -Key 'starting_duplicate_check') -Status ("{0} / {1}" -f $checkedCount, $totalCount) -PercentComplete (($checkedCount / $totalCount) * 100)
+
+        try {
+            $hash = (Get-FileHash -Path $file.FullName -Algorithm SHA256 -ErrorAction Stop).Hash
+            if ($hashes.ContainsKey($hash)) {
+                $hashes[$hash] += $file.FullName
+            } else {
+                $hashes[$hash] = @($file.FullName)
+            }
+        } catch {
+            Write-Host "`nWarning: Could not calculate hash for '$($file.FullName)'. Error: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Log "WARN: Could not calculate hash for '$($file.FullName)'. Error: $($_.Exception.Message)"
+        }
+    }
+    Write-Progress -Activity (Get-String -Key 'starting_duplicate_check') -Completed
+
+    # Filter for actual duplicates (more than one file per hash)
+    $duplicateSets = $hashes.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 }
+
+    # Store duplicates in the global variable for reporting
+    if ($duplicateSets) {
+        foreach ($set in $duplicateSets) {
+            $script:duplicateFiles[$set.Name] = $set.Value
+        }
+    }
+
+    Write-Host (Get-String -Key 'duplicate_check_complete' -FormatArgs $script:duplicateFiles.Keys.Count) -ForegroundColor Green
+    Write-Host ""
+}
 
 # Function to write logs to a file (stores in memory first)
 function Write-Log {
@@ -46,14 +238,14 @@ function Write-AllLogs {
 
 # Function to check if FFmpeg is installed
 function Test-FFmpeg {
-    Write-Host "Checking for FFmpeg..."
+    Write-Host (Get-String -Key 'checking_ffmpeg')
     try {
         # Attempts to find the 'ffmpeg' command
         Get-Command ffmpeg.exe -ErrorAction Stop | Out-Null
-        Write-Host "FFmpeg is installed." -ForegroundColor Green
+        Write-Host (Get-String -Key 'ffmpeg_installed') -ForegroundColor Green
         return $true
     } catch {
-        Write-Host "FFmpeg was not found on your system." -ForegroundColor Yellow
+        Write-Host (Get-String -Key 'ffmpeg_not_found') -ForegroundColor Yellow
         return $false
     }
 }
@@ -61,12 +253,12 @@ function Test-FFmpeg {
 # Function to install and configure FFmpeg
 function Install-FFmpeg {
     Write-Host ""
-    if (Test-UserConfirmation -Prompt "Do you want the script to install FFmpeg for you? (Y/N)") {
+    if (Test-UserConfirmation -Prompt (Get-String -Key 'prompt_install_ffmpeg')) {
         Write-Log "INFO: User agreed to install FFmpeg."
-        Write-Host "Starting FFmpeg installation..." -ForegroundColor Cyan
+        Write-Host (Get-String -Key 'starting_ffmpeg_install') -ForegroundColor Cyan
 
         try {
-            $downloadUrl = $config.FFmpegUrl
+            $downloadUrl = $config.FFmpegSettings.DownloadUrl
             $tempDir = Join-Path -Path $env:TEMP -ChildPath "ffmpeg_install"
             $zipFile = Join-Path -Path $tempDir -ChildPath "ffmpeg.7z"
 
@@ -76,13 +268,13 @@ function Install-FFmpeg {
                 $sevenZipExePath = (Get-Command 7z.exe -ErrorAction Stop).Path
                 Write-Log "INFO: 7-Zip is already installed. Using the existing version."
             } catch {
-                Write-Host "7-Zip was not found on your system." -ForegroundColor Yellow
-                if (Test-UserConfirmation -Prompt "Do you want to install a portable version of 7-Zip to extract FFmpeg? (Y/N)") {
+                Write-Host (Get-String -Key '7zip_not_found') -ForegroundColor Yellow
+                if (Test-UserConfirmation -Prompt (Get-String -Key 'prompt_install_7zip')) {
                     Write-Log "INFO: User agreed to install portable 7-Zip."
                     $sevenZipDownloadUrl = $config.SevenZipUrl
                     $sevenZipZipFile = Join-Path -Path $tempDir -ChildPath "7z.zip"
 
-                    Write-Host "Downloading portable 7-Zip..."
+                    Write-Host (Get-String -Key 'downloading_7zip')
                     Invoke-WebRequest -Uri $sevenZipDownloadUrl -OutFile $sevenZipZipFile -ErrorAction Stop
 
                     # Use PowerShell's built-in Expand-Archive for .zip files.
@@ -92,10 +284,10 @@ function Install-FFmpeg {
                     $sevenZipExePath = (Get-ChildItem -Path $tempDir -Recurse -Filter "7za.exe").FullName | Select-Object -First 1
 
                     if (-not ($sevenZipExePath -and (Test-Path $sevenZipExePath))) {
-                        throw "The '7za.exe' executable was not found after extraction."
+                        throw (Get-String -Key '7zip_exe_not_found')
                     }
                 } else {
-                    Write-Host "Installation cancelled. The script cannot continue." -ForegroundColor Yellow
+                    Write-Host (Get-String -Key 'installation_cancelled') -ForegroundColor Yellow
                     return $false
                 }
             }
@@ -105,10 +297,10 @@ function Install-FFmpeg {
                 New-Item -Path $tempDir -ItemType Directory -ErrorAction Stop | Out-Null
             }
 
-            Write-Host "Downloading FFmpeg from '$downloadUrl'..."
+            Write-Host (Get-String -Key 'downloading_ffmpeg' -FormatArgs $downloadUrl)
             Invoke-WebRequest -Uri $downloadUrl -OutFile $zipFile -ErrorAction Stop
 
-            Write-Host "Extracting FFmpeg archive..."
+            Write-Host (Get-String -Key 'extracting_ffmpeg')
             & $sevenZipExePath x "$zipFile" "-o$tempDir" -y | Out-Null
 
             # Find the 'bin' folder after extraction
@@ -116,32 +308,32 @@ function Install-FFmpeg {
             $binPath = Join-Path -Path $extractedDir.FullName -ChildPath "bin"
 
             if (Test-Path $binPath) {
-                Write-Host "Updating the PATH environment variable..."
+                Write-Host (Get-String -Key 'updating_path')
                 # Get the current value of the user's PATH variable
                 $currentPath = [Environment]::GetEnvironmentVariable('Path', 'User')
                 # Check if the path is not already present to avoid duplicates
                 if ($currentPath -notlike "*$binPath*") {
                     $newPath = "$binPath;$currentPath"
                     [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
-                    Write-Host "Installation complete! FFmpeg is now available in the user's PATH." -ForegroundColor Green
-                    Write-Host "Please restart PowerShell for the change to take effect." -ForegroundColor Yellow
+                    Write-Host (Get-String -Key 'installation_complete') -ForegroundColor Green
+                    Write-Host (Get-String -Key 'restart_powershell') -ForegroundColor Yellow
                     Write-Log "SUCCESS: FFmpeg was installed and the PATH was updated."
                 } else {
-                    Write-Host "The FFmpeg path is already in the PATH." -ForegroundColor Yellow
+                    Write-Host (Get-String -Key 'ffmpeg_path_already_in_path') -ForegroundColor Yellow
                 }
             } else {
-                Write-Host "Error: The 'bin' folder was not found after extraction." -ForegroundColor Red
+                Write-Host (Get-String -Key 'error_bin_folder_not_found') -ForegroundColor Red
                 Write-Log "ERROR: Installation failed. The 'bin' folder was not found."
                 exit
             }
             return $true
         } catch {
-            Write-Host "An error occurred during FFmpeg installation: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host (Get-String -Key 'error_ffmpeg_install' -FormatArgs $_.Exception.Message) -ForegroundColor Red
             Write-Log "ERROR: FFmpeg installation failed. $($_.Exception.Message)"
             return $false
         }
     } else {
-        Write-Host "FFmpeg installation was cancelled. The script cannot continue." -ForegroundColor Yellow
+        Write-Host (Get-String -Key 'ffmpeg_install_cancelled') -ForegroundColor Yellow
         Write-Log "INFO: Installation cancelled. The script has ended."
         return $false
     }
@@ -182,7 +374,7 @@ function Test-UserConfirmation {
         if ($choice -match '^(n|no|non)$') {
             return $false
         }
-        Write-Host "Invalid input. Please enter 'Y' or 'N'." -ForegroundColor Yellow
+        Write-Host (Get-String -Key 'invalid_input_yn') -ForegroundColor Yellow
     }
 }
 
@@ -192,7 +384,7 @@ function Select-Folder {
     Add-Type -AssemblyName System.Windows.Forms
 
     $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dialog.Description = "Select the folder to analyze."
+    $dialog.Description = (Get-String -Key 'select_folder_title')
     $dialog.ShowNewFolderButton = $true
 
     $result = $dialog.ShowDialog()
@@ -209,7 +401,7 @@ function Select-Folder {
 # --- Interruption handling block (Ctrl+C) and global error handler ---
 trap {
     # This block runs if the user presses Ctrl+C or an error occurs
-    Write-Host "`nStopping current tasks..." -ForegroundColor Red
+    Write-Host "`n$((Get-String -Key 'stopping_tasks'))" -ForegroundColor Red
     $jobs | Stop-Job -Force -ErrorAction SilentlyContinue
     $jobs | Wait-Job | Out-Null
     $jobs | Remove-Job
@@ -217,30 +409,33 @@ trap {
     # Restore default console colors
     $host.ui.rawui.backgroundcolor = "Black"
     $host.ui.rawui.foregroundcolor = "White"
-    Write-Host "Tasks stopped. The script is now closing." -ForegroundColor Cyan
+    Write-Host (Get-String -Key 'tasks_stopped') -ForegroundColor Cyan
     exit
 }
 # --- End of interruption and error handling block ---
 
+# --- Main Script ---
+Show-Banner
+
 # Step 0: Check for existing FFmpeg processes
-Write-Host "Checking for existing FFmpeg processes..." -ForegroundColor White
+Write-Host (Get-String -Key 'checking_ffmpeg_processes') -ForegroundColor White
 $ffmpegProcesses = Get-Process -Name "ffmpeg" -ErrorAction SilentlyContinue
 if ($ffmpegProcesses) {
-    Write-Host "Warning: $($ffmpegProcesses.Count) 'ffmpeg.exe' processes were found running." -ForegroundColor Yellow
-    if (Test-UserConfirmation -Prompt "Do you want to stop these processes to ensure the script runs correctly? (Y/N)") {
-        Write-Host "Stopping FFmpeg processes..." -ForegroundColor Cyan
+    Write-Host (Get-String -Key 'ffmpeg_processes_found' -FormatArgs $ffmpegProcesses.Count) -ForegroundColor Yellow
+    if (Test-UserConfirmation -Prompt (Get-String -Key 'prompt_stop_processes')) {
+        Write-Host (Get-String -Key 'stopping_ffmpeg_processes') -ForegroundColor Cyan
         Stop-Process -Name "ffmpeg" -Force -ErrorAction SilentlyContinue
-        Write-Host "Processes stopped." -ForegroundColor Green
+        Write-Host (Get-String -Key 'processes_stopped') -ForegroundColor Green
         Write-Log "INFO: User chose to stop running FFmpeg processes."
     } else {
-        Write-Host "FFmpeg processes must be manually closed for the script to continue." -ForegroundColor Red
-        Write-Host "Please close the processes and restart the script."
+        Write-Host (Get-String -Key 'manual_close_ffmpeg') -ForegroundColor Red
+        Write-Host (Get-String -Key 'press_any_key_to_exit')
         Write-Log "INFO: User chose not to stop processes. Exiting script."
-        Read-Host -Prompt "Press any key to exit..."
+        Read-Host -Prompt (Get-String -Key 'press_any_key_to_exit')
         exit
     }
 } else {
-    Write-Host "No running FFmpeg processes were found." -ForegroundColor Green
+    Write-Host (Get-String -Key 'no_ffmpeg_processes_found') -ForegroundColor Green
 }
 Write-Host ""
 
@@ -254,20 +449,20 @@ if (-not (Test-FFmpeg)) {
 Write-Host ""
 
 # Step 2: Ask the user for the path via a selection window
-Write-Host "A folder selection window will open. Please choose the folder to analyze."
+Write-Host (Get-String -Key 'folder_select_window_prompt')
 $folderPath = Select-Folder
-Write-Host "Selected folder: $folderPath"
+Write-Host ("{0} {1}" -f (Get-String -Key 'selected_folder'), $folderPath)
 
 # Check if a path was selected
 if ([string]::IsNullOrEmpty($folderPath)) {
-    Write-Host "Selection cancelled. The script will stop." -ForegroundColor Yellow
+    Write-Host (Get-String -Key 'selection_cancelled') -ForegroundColor Yellow
     Write-Log "INFO: User cancelled the selection. The script has ended."
     exit
 }
 
 # Check if the path exists (less likely with the dialog box)
 if (-not (Test-Path -Path $folderPath)) {
-    Write-Host "Error: The path '$folderPath' does not exist." -ForegroundColor Red
+    Write-Host (Get-String -Key 'error_path_not_exist' -FormatArgs $folderPath) -ForegroundColor Red
     Write-Log "ERROR: The path '$folderPath' does not exist."
     exit
 }
@@ -280,14 +475,19 @@ $videoFiles = Get-ChildItem -Path $folderPath -File -Recurse | Where-Object {
 Write-Log "INFO: $($videoFiles.Count) video files were detected for analysis."
 
 if ($videoFiles.Count -eq 0) {
-    Write-Host "No video files found in the folder and its subfolders." -ForegroundColor Yellow
+    Write-Host (Get-String -Key 'no_video_files_found') -ForegroundColor Yellow
     Write-Log "INFO: No video files found. The script has ended."
     exit
 }
 
+# Step 3.5: Optional - Find duplicate files
+if ($config.DuplicateFileCheck.Enabled) {
+    Find-DuplicateFiles -Files $videoFiles
+}
+
 # Step 4: Parallel analysis with dynamic CPU usage control and enhanced UI
 Clear-Host # Clear the window for a clean start
-Write-Host "Analysis in progress... (Press Ctrl+C to cancel)"
+Write-Host (Get-String -Key 'analysis_in_progress')
 Write-Log "INFO: Starting parallel analysis via jobs."
 
 # Set console colors for a better visual experience
@@ -296,7 +496,7 @@ $host.ui.rawui.foregroundcolor = "White"
 Clear-Host
 
 # Get the maximum number of concurrent jobs from the config
-$maxConcurrentJobs = $config.MaxConcurrentJobs
+$maxConcurrentJobs = $config.Performance.MaxConcurrentJobs
 
 # Array to store ongoing jobs and recently completed files
 $jobs = @()
@@ -313,21 +513,31 @@ $spinner = @('|', '/', '-', '\')
 $spinnerIndex = 0
 
 # Initial UI setup
-Write-Host "Analyzing $totalFiles video files... (Press Ctrl+C to cancel)"
+Write-Host (Get-String -Key 'analyzing_files' -FormatArgs $totalFiles)
 Write-Host ""
 Write-Host "------------------------------------------------"
-Write-Host "Recently analyzed files:"
+Write-Host (Get-String -Key 'recently_analyzed_files')
 
 # Main loop
 while ($jobsCompleted -lt $totalFiles) {
+    # --- Graceful cancellation ---
+    if ($Host.UI.RawUI.KeyAvailable -and ($Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown").Character -eq 'q')) {
+        Write-Host "`n$((Get-String -Key 'q_pressed_to_cancel'))" -ForegroundColor Yellow
+        break
+    }
+
     # Start new jobs if the number of running jobs is less than the maximum
     while (($jobs | Where-Object { $_.State -eq 'Running' }).Count -lt $maxConcurrentJobs -and $filesToAnalyze.Count -gt 0) {
         $file = $filesToAnalyze.Dequeue()
         $jobs += Start-Job -ScriptBlock {
-            param($filePath)
+            param($filePath, $ffmpegCommand)
+
+            # Build the command by replacing the placeholder
+            $commandToRun = $ffmpegCommand.Replace("{filePath}", $filePath)
 
             # Start the check with FFmpeg
-            $result = & "ffmpeg" -v error -i "$filePath" -f null - 2>&1
+            # We use Invoke-Expression to handle complex commands with arguments
+            $result = Invoke-Expression -Command "$commandToRun 2>&1"
             $isCorrupted = (-not [string]::IsNullOrWhiteSpace($result))
 
             # Return the results
@@ -336,7 +546,7 @@ while ($jobsCompleted -lt $totalFiles) {
                 IsCorrupted = $isCorrupted
                 FFmpegOutput = $result
             }
-        } -ArgumentList $file.FullName
+        } -ArgumentList @($file.FullName, $config.FFmpegSettings.CustomCommand)
     }
 
     # Check for completed jobs
@@ -346,7 +556,7 @@ while ($jobsCompleted -lt $totalFiles) {
         foreach ($job in $completedJobs) {
             $jobsCompleted++
 
-            $null = $result = $job | Receive-Job -Keep
+            $result = Receive-Job -Job $job -Keep
 
             # Add result to the recent files queue, keeping the size capped
             if ($recentlyAnalyzedFiles.Count -ge $listCount) {
@@ -370,9 +580,12 @@ while ($jobsCompleted -lt $totalFiles) {
     }
 
     # --- UI Refresh Section without flickering ---
+    # Update console width for responsive UI
+    $consoleWidth = $Host.UI.RawUI.WindowSize.Width
+
     # Update progress bar
     $progressPercentage = ($jobsCompleted / $totalFiles) * 100
-    $progressText = "Progress: $([math]::Round($progressPercentage, 2))% - $jobsCompleted of $totalFiles files analyzed "
+    $progressText = (Get-String -Key 'progress_text' -FormatArgs ([math]::Round($progressPercentage, 2)), $jobsCompleted, $totalFiles)
 
     # Update spinner
     $spinnerIndex = ($spinnerIndex + 1) % $spinner.Count
@@ -384,7 +597,7 @@ while ($jobsCompleted -lt $totalFiles) {
     # Update the list of recently analyzed files
     $i = 0
     $recentlyAnalyzedFiles | ForEach-Object {
-        $statusText = if ($_.IsCorrupted) { "[Corrupted]" } else { "[Not corrupted]" }
+        $statusText = if ($_.IsCorrupted) { (Get-String -Key 'status_corrupted') } else { (Get-String -Key 'status_not_corrupted') }
         $foregroundColor = if ($_.IsCorrupted) { "Red" } else { "Green" }
 
         $truncatedPath = Truncate-Path -Path $_.FullName -MaxLength ($consoleWidth - ($statusText.Length + 2))
@@ -414,49 +627,84 @@ $host.ui.rawui.backgroundcolor = "Black"
 $host.ui.rawui.foregroundcolor = "White"
 Clear-Host
 
-# Step 5: Final summary and interactive deletion actions
+# Step 5: Final summary and interactive actions
 Write-Host ""
-Write-Host "--- Analysis Summary ---"
-Write-Host "Video files analyzed: $($totalFiles)"
-Write-Host "Corrupted files detected: $($corruptedFiles.Count)"
+Write-Host (Get-String -Key 'analysis_summary')
+Write-Host ("{0} {1}" -f (Get-String -Key 'files_analyzed'), $totalFiles)
+Write-Host ("{0} {1}" -f (Get-String -Key 'corrupted_files_detected'), $corruptedFiles.Count)
 
-# Interactive deletion
+# Interactive actions for corrupted files
 if ($corruptedFiles.Count -gt 0) {
     Write-Host ""
-    Write-Host "List of corrupted files found: " -ForegroundColor Red
+    Write-Host (Get-String -Key 'list_of_corrupted_files') -ForegroundColor Red
     $corruptedFiles | ForEach-Object { Write-Host " - $_" }
 
     Write-Host ""
-    Write-Host "WARNING: The action below is irreversible." -ForegroundColor Yellow
+    $action = $config.CorruptedFileAction.Action
+    $confirmationPrompt = ""
+    if ($action -eq "Delete") {
+        $confirmationPrompt = (Get-String -Key 'prompt_delete_files' -FormatArgs $corruptedFiles.Count)
+        Write-Host (Get-String -Key 'warning_irreversible') -ForegroundColor Yellow
+    } elseif ($action -eq "Move") {
+        $movePath = $config.CorruptedFileAction.MovePath
+        # Ensure the move path is absolute
+        if (-not ([System.IO.Path]::IsPathRooted($movePath))) {
+            $movePath = Join-Path -Path $PSScriptRoot -ChildPath $movePath
+        }
+        $confirmationPrompt = (Get-String -Key 'prompt_move_files' -FormatArgs $corruptedFiles.Count, $movePath)
+        Write-Host (Get-String -Key 'action_move') -ForegroundColor Cyan
+    }
 
     $fileActions = @{}
-    if (Test-UserConfirmation -Prompt "Do you want to PERMANENTLY DELETE all $($corruptedFiles.Count) listed files? (Y/N)") {
-        foreach ($file in $corruptedFiles) {
-            try {
-                Write-Host "Deleting '$file'..." -ForegroundColor Cyan
-                Remove-Item -Path $file -Recurse -Force -ErrorAction Stop
-                $deletedFiles += $file
-                $fileActions[$file] = "[Deleted]"
-                Write-Log "SUCCESS: '$file' was permanently deleted."
-            } catch {
-                $fileActions[$file] = "[Failed to delete]"
-                Write-Host "Error deleting '$file': $($_.Exception.Message)" -ForegroundColor Red
-                Write-Log "ERROR: Failed to delete '$file': $($_.Exception.Message)"
+    if ($confirmationPrompt -and (Test-UserConfirmation -Prompt $confirmationPrompt)) {
+        # Create quarantine directory if it doesn't exist
+        if ($action -eq "Move") {
+            $movePath = $config.CorruptedFileAction.MovePath
+            if (-not ([System.IO.Path]::IsPathRooted($movePath))) {
+                $movePath = Join-Path -Path $PSScriptRoot -ChildPath $movePath
+            }
+            if (-not (Test-Path -Path $movePath)) {
+                New-Item -Path $movePath -ItemType Directory -Force | Out-Null
             }
         }
-        Write-Log "INFO: User chose to delete files. Summary: $($deletedFiles.Count) of $($corruptedFiles.Count) corrupted files were deleted."
-    } else {
-        Write-Host "Deletion cancelled. No files were deleted." -ForegroundColor Cyan
-        Write-Log "INFO: User chose not to delete any files."
-        # Populate actions for the report
+
         foreach ($file in $corruptedFiles) {
-            $fileActions[$file] = "[Not Deleted]"
+            try {
+                if ($action -eq "Delete") {
+                    Write-Host (Get-String -Key 'deleting_file' -FormatArgs $file) -ForegroundColor Cyan
+                    Remove-Item -Path $file -Recurse -Force -ErrorAction Stop
+                    $deletedFiles += $file
+                    $fileActions[$file] = (Get-String -Key 'status_deleted')
+                    Write-Log "SUCCESS: '$file' was permanently deleted."
+                } elseif ($action -eq "Move") {
+                    $fileName = Split-Path -Path $file -Leaf
+                    $destination = Join-Path -Path $movePath -ChildPath $fileName
+                    Write-Host (Get-String -Key 'moving_file' -FormatArgs $file, $destination) -ForegroundColor Cyan
+                    Move-Item -Path $file -Destination $destination -Force -ErrorAction Stop
+                    $movedFiles += $file
+                    $fileActions[$file] = (Get-String -Key 'status_moved')
+                    Write-Log "SUCCESS: '$file' was moved to '$destination'."
+                }
+            } catch {
+                $errorMessage = (Get-String -Key 'error_actioning_file' -FormatArgs $action.ToLower(), $file, $_.Exception.Message)
+                $fileActions[$file] = (Get-String -Key 'status_failed_to_action' -FormatArgs $action)
+                Write-Host $errorMessage -ForegroundColor Red
+                Write-Log "ERROR: $errorMessage"
+            }
+        }
+        Write-Log "INFO: User chose to $action files. Summary: $($deletedFiles.Count + $movedFiles.Count) of $($corruptedFiles.Count) corrupted files were actioned."
+
+    } else {
+        Write-Host (Get-String -Key 'action_cancelled') -ForegroundColor Cyan
+        Write-Log "INFO: User chose not to take any action on corrupted files."
+        foreach ($file in $corruptedFiles) {
+            $fileActions[$file] = (Get-String -Key 'status_no_action')
         }
     }
 
     # Final summary with table
     Write-Host ""
-    Write-Host "--- Deletion Summary ---"
+    Write-Host (Get-String -Key 'action_summary')
     Write-Host ""
 
     $table = $corruptedFiles | ForEach-Object {
@@ -468,9 +716,30 @@ if ($corruptedFiles.Count -gt 0) {
 
     $table | Format-Table -AutoSize
 } else {
-    Write-Host "No corrupted files were found." -ForegroundColor Green
+    Write-Host (Get-String -Key 'no_corrupted_files_found') -ForegroundColor Green
     Write-Log "INFO: No corrupted files were found."
 }
 
+# Display duplicate file summary
+if ($config.DuplicateFileCheck.Enabled) {
+    Write-Host ""
+    Write-Host (Get-String -Key 'duplicate_summary_title')
+
+    if ($duplicateFiles.Keys.Count -gt 0) {
+        Write-Host (Get-String -Key 'duplicates_found_message')
+        Write-Host ""
+
+        foreach ($hash in $duplicateFiles.Keys) {
+            Write-Host "  $((Get-String -Key 'hash_header')): $hash" -ForegroundColor Yellow
+            foreach ($file in $duplicateFiles[$hash]) {
+                Write-Host "    - $file"
+            }
+            Write-Host ""
+        }
+    } else {
+        Write-Host (Get-String -Key 'no_duplicates_found') -ForegroundColor Green
+    }
+}
+
 Write-Host ""
-Write-Host "Script finished." -ForegroundColor Cyan
+Write-Host (Get-String -Key 'script_finished') -ForegroundColor Cyan
