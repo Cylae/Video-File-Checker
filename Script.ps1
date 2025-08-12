@@ -127,6 +127,7 @@ function Load-Language {
 
 # Load the language strings based on config
 $lang = Load-Language -langCode $config.Language
+
 # Function to get a localized string
 function Get-String {
     param(
@@ -146,6 +147,7 @@ function Get-String {
         return "[$Key NOT FOUND]"
     }
 }
+
 # --- Global Variables ---
 $corruptedFiles = @()
 $deletedFiles = @()
