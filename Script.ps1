@@ -50,8 +50,6 @@ function Load-Config {
         $defaultConfig | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding UTF8
         return $defaultConfig
     }
-}
-
 # Function to get the default configuration settings
 function Get-DefaultConfig {
     return [PSCustomObject]@{
@@ -146,7 +144,6 @@ function Get-String {
         return "[$Key NOT FOUND]"
     }
 }
-
 # --- Global Variables ---
 $corruptedFiles = @()
 $deletedFiles = @()
