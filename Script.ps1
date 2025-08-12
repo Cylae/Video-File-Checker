@@ -1,3 +1,10 @@
+# --- Pre-flight Checks ---
+if ($PSVersionTable.PSVersion.Major -lt 4) {
+    Write-Error "PowerShell 4.0 or higher is required to run this script (for the Get-FileHash cmdlet). Your current version is $($PSVersionTable.PSVersion). Please upgrade and try again."
+    if ($Host.Name -eq "ConsoleHost") { Read-Host "Press Enter to exit" }
+    exit
+}
+
 # Set console encoding to UTF-8 for special characters (emojis)
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -50,11 +57,16 @@ function Load-Config {
         $defaultConfig | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding UTF8
         return $defaultConfig
     }
+}
+
 # Function to get the default configuration settings
 function Get-DefaultConfig {
     return [PSCustomObject]@{
         FFmpegSettings = @{
             DownloadUrl = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-git-full.7z'
+            # WARNING: The CustomCommand is executed via Invoke-Expression, which can be a security risk.
+            # Only use commands from trusted sources. Ensure the command correctly handles file paths with spaces,
+            # for example by enclosing "{filePath}" in quotes within the command string.
             CustomCommand = 'ffmpeg -v error -i "{filePath}" -f null -'
             Examples_CustomCommands = @{
                 NVIDIA_GPU = 'ffmpeg -hwaccel cuda -i "{filePath}" -f null -'
@@ -62,22 +74,13 @@ function Get-DefaultConfig {
                 Intel_GPU = 'ffmpeg -hwaccel qsv -i "{filePath}" -f null -'
             }
         }
-        SevenZipUrl = 'https://www.7-zip.org/a/7z2301-extra.zip
-            DownloadUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-git-full.7z"
-            CustomCommand = "ffmpeg -v error -i \"{filePath}\" -f null -"
-            Examples_CustomCommands = @{
-                NVIDIA_GPU = "ffmpeg -hwaccel cuda -i \"{filePath}\" -f null -"
-                AMD_GPU = "ffmpeg -hwaccel amf -i \"{filePath}\" -f null -"
-                Intel_GPU = "ffmpeg -hwaccel qsv -i \"{filePath}\" -f null -"
-            }
-        }
-        SevenZipUrl = "https://www.7-zip.org/a/7z2301-extra.zip"
+        SevenZipUrl = 'https://www.7-zip.org/a/7z2301-extra.zip'
         Performance = @{
-            MaxConcurrentJobs = 0 # 0 means auto-detect
+            MaxConcurrentJobs = 0
         }
         Language = "en"
         CorruptedFileAction = @{
-            Action = "Delete" # "Delete" or "Move"
+            Action = "Delete"
             MovePath = "_CorruptedFiles"
         }
         DuplicateFileCheck = @{
@@ -124,7 +127,6 @@ function Load-Language {
 
 # Load the language strings based on config
 $lang = Load-Language -langCode $config.Language
-
 # Function to get a localized string
 function Get-String {
     param(
