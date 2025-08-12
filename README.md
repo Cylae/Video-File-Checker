@@ -1,69 +1,69 @@
 # Video File Integrity Checker
 
-Un script PowerShell avancé pour vérifier l'intégrité des fichiers vidéo, trouver les doublons, et gérer les fichiers corrompus.
+An advanced PowerShell script to check the integrity of video files, find duplicates, and manage corrupted files.
 
 ## Description
 
-Ce script analyse de manière récursive un dossier de votre choix pour trouver des fichiers vidéo potentiellement corrompus en utilisant **FFmpeg**. Il est conçu pour être à la fois puissant et facile à utiliser, avec une interface utilisateur interactive dans la console, une configuration entièrement personnalisable, et un support multilingue.
+This script recursively analyzes a folder of your choice to find potentially corrupt video files using **FFmpeg**. It is designed to be both powerful and user-friendly, with an interactive console UI, fully customizable configuration, and multi-language support.
 
-## Fonctionnalités
+## Features
 
--   **Analyse de corruption :** Utilise FFmpeg pour détecter les erreurs dans les fichiers vidéo.
--   **Traitement parallèle :** Analyse plusieurs fichiers simultanément pour une vitesse maximale, en s'adaptant au nombre de cœurs de votre processeur.
--   **Détection des doublons :** Analyse (en parallèle) les fichiers pour trouver les doublons exacts en se basant sur leur hash SHA256.
--   **Gestion des fichiers corrompus :** Propose de **supprimer** ou de **déplacer** les fichiers corrompus vers un dossier de quarantaine.
--   **Interface réactive :** L'affichage dans la console s'adapte à la taille de la fenêtre.
--   **Configuration externe :** Tous les paramètres sont gérés via un fichier `config.json` facile à modifier.
--   **Support multilingue :** L'interface est disponible en Français et en Anglais (configurable via `config.json`).
--   **Installation assistée :** Le script peut télécharger et installer automatiquement FFmpeg s'il n'est pas détecté.
--   **Annulation facile :** Appuyez sur `q` ou `Ctrl+C` à tout moment pour arrêter le script proprement.
+-   **Corruption Analysis:** Uses FFmpeg to detect errors in video files.
+-   **Parallel Processing:** Analyzes multiple files simultaneously for maximum speed, adapting to your processor's core count.
+-   **Duplicate Detection:** (Also parallelized) Scans files to find exact duplicates based on their SHA256 hash.
+-   **Corrupted File Management:** Offers to **delete** or **move** corrupted files to a quarantine folder.
+-   **Responsive UI:** The console display adapts to the window size.
+-   **External Configuration:** All settings are managed via an easy-to-edit `config.json` file.
+-   **Multi-language Support:** The UI is available in English and French (configurable via `config.json`).
+-   **Assisted Installation:** The script can automatically download and install FFmpeg if it's not detected.
+-   **Easy Cancellation:** Press `q` or `Ctrl+C` at any time to stop the script gracefully.
 
-## Prérequis
+## Prerequisites
 
 -   **Windows**
--   **PowerShell 4.0 ou supérieur**. Le script vérifiera votre version au démarrage.
--   **FFmpeg**. Si vous ne l'avez pas, le script vous proposera de l'installer pour vous.
+-   **PowerShell 4.0 or higher**. The script will check your version on startup.
+-   **FFmpeg**. If you don't have it, the script will offer to install it for you.
 
 ## Installation
 
-1.  Téléchargez tous les fichiers du projet (notamment `Script.ps1`).
-2.  Placez-les dans un dossier de votre choix.
-3.  Si vous n'avez pas FFmpeg, le script s'en occupera pour vous au premier lancement.
+1.  Download all project files (especially `Script.ps1`).
+2.  Place them in a folder of your choice.
+3.  If you don't have FFmpeg, the script will handle it for you on the first run.
 
-## Utilisation
+## Usage
 
-1.  Faites un clic droit sur `Script.ps1` et choisissez "Exécuter avec PowerShell".
-2.  Une fenêtre s'ouvrira pour vous demander de sélectionner le dossier à analyser.
-3.  L'analyse commencera. Suivez les instructions à l'écran.
+1.  Right-click on `Script.ps1` and choose "Run with PowerShell".
+2.  A window will open asking you to select the folder to analyze.
+3.  The analysis will begin. Follow the on-screen instructions.
 
 ## Configuration (`config.json`)
 
-Le script est entièrement configurable via le fichier `config.json`. S'il n'existe pas, un fichier par défaut sera créé au premier lancement.
+The script is fully configurable via the `config.json` file. If it doesn't exist, a default file will be created on the first run.
 
-Voici une description détaillée de chaque paramètre :
+Here is a detailed description of each setting:
 
-| Section               | Paramètre             | Description                                                                                                                                                             |
+| Section               | Setting               | Description                                                                                                                                                             |
 | --------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **FFmpegSettings**    | `DownloadUrl`         | L'URL pour télécharger l'archive 7z de FFmpeg.                                                                                                                          |
-|                       | `CustomCommand`       | La commande FFmpeg à exécuter. `{filePath}` sera remplacé par le chemin du fichier. **Attention :** Modifiez avec prudence, car cela utilise `Invoke-Expression`.             |
-|                       | `Examples_...`        | Des exemples de commandes pour l'accélération GPU (NVIDIA, AMD, Intel) à copier dans `CustomCommand`.                                                                    |
-| **SevenZipUrl**       |                       | L'URL pour télécharger une version portable de 7-Zip, nécessaire pour l'installation automatique de FFmpeg.                                                              |
-| **Performance**       | `MaxConcurrentJobs`   | Le nombre maximum de fichiers à analyser en parallèle. Mettez `0` pour une détection automatique (nombre de cœurs - 1).                                                   |
-| **Analysis**          | `MaxFilesToAnalyze`   | Permet de limiter l'analyse aux N premiers fichiers trouvés. Mettez `0` pour analyser tous les fichiers. Très utile pour les tests.                                      |
-| **Language**          |                       | La langue de l'interface. Valeurs possibles : `"en"` (Anglais), `"fr"` (Français).                                                                                       |
-| **CorruptedFileAction** | `Action`              | L'action à effectuer sur les fichiers corrompus. Valeurs possibles : `"Delete"` (Supprimer) ou `"Move"` (Déplacer).                                                        |
-|                       | `MovePath`            | Le dossier de destination pour les fichiers déplacés si l'action est "Move".                                                                                            |
-| **DuplicateFileCheck**| `Enabled`             | Activer (`true`) ou désactiver (`false`) la recherche de fichiers en double. **Attention :** peut être très long.                                                         |
-| **VideoExtensions**   |                       | La liste des extensions de fichiers vidéo à analyser.                                                                                                                   |
-| **UI**                | `ShowBanner`          | Afficher (`true`) ou cacher (`false`) la bannière d'information au démarrage du script.                                                                                |
+| **FFmpegSettings**    | `DownloadUrl`         | The URL to download the FFmpeg 7z archive.                                                                                                                            |
+|                       | `CustomCommand`       | The FFmpeg command to execute. `{filePath}` will be replaced with the file path. **Warning:** Modify with caution, as this uses `Invoke-Expression`.                     |
+|                       | `Examples_...`        | Example commands for GPU acceleration (NVIDIA, AMD, Intel) to copy into `CustomCommand`.                                                                                 |
+| **SevenZipUrl**       |                       | The URL to download a portable version of 7-Zip, required for the automatic FFmpeg installation.                                                                       |
+| **Performance**       | `MaxConcurrentJobs`   | The maximum number of files to analyze in parallel. Set to `0` for automatic detection (number of cores - 1).                                                          |
+| **Analysis**          | `MaxFilesToAnalyze`   | Allows limiting the analysis to the first N files found. Set to `0` to analyze all files. Very useful for testing.                                                     |
+| **Language**          |                       | The UI language. Possible values: `"en"` (English), `"fr"` (French).                                                                                                     |
+| **CorruptedFileAction** | `Action`              | The action to perform on corrupted files. Possible values: `"Delete"` or `"Move"`.                                                                                      |
+|                       | `MovePath`            | The destination folder for moved files if the action is "Move".                                                                                                         |
+| **DuplicateFileCheck**| `Enabled`             | Enable (`true`) or disable (`false`) the duplicate file check. **Warning:** Can be very time-consuming.                                                                 |
+| **VideoExtensions**   |                       | The list of video file extensions to analyze.                                                                                                                           |
+| **UI**                | `ShowBanner`          | Show (`true`) or hide (`false`) the info banner on script startup.                                                                                                     |
 
-## Localisation
+## Localization
 
-L'ajout de nouvelles langues est facile :
-1.  Copiez `en.json` vers un nouveau fichier (par exemple `es.json` pour l'espagnol).
-2.  Traduisez les valeurs des chaînes de caractères dans le nouveau fichier.
-3.  Changez le paramètre `Language` dans `config.json` en `"es"`.
+Adding new languages is easy:
+1.  Copy `en.json` to a new file (e.g., `es.json` for Spanish).
+2.  Translate the string values in the new file.
+3.  Change the `Language` setting in `config.json` to `"es"`.
 
-## Licence
+## License
 
-Ce projet est sous licence MIT. Voir le fichier `LICENSE` pour plus de détails.
+This project is licensed under the MIT License. See the `LICENSE` file for details.
