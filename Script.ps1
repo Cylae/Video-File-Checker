@@ -27,6 +27,20 @@ $logBuffer = [System.Collections.Generic.List[string]]::new()
 
 # --- Functions ---
 
+# Function to display the script's startup banner
+function Show-Banner {
+    $banner = @"
+   ██████╗ ██╗   ██╗ ██╗      █████╗ ███████╗
+  ██╔════╝ ██║   ██║ ██║     ██╔══██╗██╔════╝
+  ██║      ██║   ██║ ██║     ███████║█████╗
+  ██║      ╚██╗ ██╔╝ ██║     ██╔══██║██╔══╝
+  ╚██████╗ ╚████╔╝  ███████╗██║  ██║███████╗
+   ╚═════╝  ╚═══╝   ╚══════╝╚═╝  ╚═╝╚══════╝
+"@
+    Write-Host $banner -ForegroundColor Cyan
+    Write-Host ""
+}
+
 # Function to write logs to a file (stores in memory first)
 function Write-Log {
     param(
@@ -221,6 +235,9 @@ trap {
     exit
 }
 # --- End of interruption and error handling block ---
+
+# Show the startup banner
+Show-Banner
 
 # Step 0: Check for existing FFmpeg processes
 Write-Host "Checking for existing FFmpeg processes..." -ForegroundColor White
