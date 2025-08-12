@@ -76,5 +76,6 @@
     "banner_name": "Name: {0}",
     "banner_version": "Version: {0}",
     "banner_release_date": "Release Date: {0}",
-    "banner_link": "Link: {0}"
+    "banner_link": "Link: {0}",
+    "file_limit_applied": "File limit applied. Analyzing the first {0} files out of {1} total."
 }
