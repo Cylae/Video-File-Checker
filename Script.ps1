@@ -56,6 +56,15 @@ function Load-Config {
 function Get-DefaultConfig {
     return [PSCustomObject]@{
         FFmpegSettings = @{
+            DownloadUrl = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-git-full.7z'
+            CustomCommand = 'ffmpeg -v error -i "{filePath}" -f null -'
+            Examples_CustomCommands = @{
+                NVIDIA_GPU = 'ffmpeg -hwaccel cuda -i "{filePath}" -f null -'
+                AMD_GPU = 'ffmpeg -hwaccel amf -i "{filePath}" -f null -'
+                Intel_GPU = 'ffmpeg -hwaccel qsv -i "{filePath}" -f null -'
+            }
+        }
+        SevenZipUrl = 'https://www.7-zip.org/a/7z2301-extra.zip
             DownloadUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-git-full.7z"
             CustomCommand = "ffmpeg -v error -i \"{filePath}\" -f null -"
             Examples_CustomCommands = @{
@@ -546,7 +555,7 @@ while ($jobsCompleted -lt $totalFiles) {
         foreach ($job in $completedJobs) {
             $jobsCompleted++
 
-            $null = $result = $job | Receive-Job -Keep
+            $result = Receive-Job -Job $job -Keep
 
             # Add result to the recent files queue, keeping the size capped
             if ($recentlyAnalyzedFiles.Count -ge $listCount) {
