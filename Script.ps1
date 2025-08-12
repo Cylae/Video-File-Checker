@@ -50,8 +50,6 @@ function Load-Config {
         $defaultConfig | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding UTF8
         return $defaultConfig
     }
-}
-
 # Function to get the default configuration settings
 function Get-DefaultConfig {
     return [PSCustomObject]@{
@@ -64,13 +62,22 @@ function Get-DefaultConfig {
                 Intel_GPU = 'ffmpeg -hwaccel qsv -i "{filePath}" -f null -'
             }
         }
-        SevenZipUrl = 'https://www.7-zip.org/a/7z2301-extra.zip'
+        SevenZipUrl = 'https://www.7-zip.org/a/7z2301-extra.zip
+            DownloadUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-git-full.7z"
+            CustomCommand = "ffmpeg -v error -i \"{filePath}\" -f null -"
+            Examples_CustomCommands = @{
+                NVIDIA_GPU = "ffmpeg -hwaccel cuda -i \"{filePath}\" -f null -"
+                AMD_GPU = "ffmpeg -hwaccel amf -i \"{filePath}\" -f null -"
+                Intel_GPU = "ffmpeg -hwaccel qsv -i \"{filePath}\" -f null -"
+            }
+        }
+        SevenZipUrl = "https://www.7-zip.org/a/7z2301-extra.zip"
         Performance = @{
-            MaxConcurrentJobs = 0
+            MaxConcurrentJobs = 0 # 0 means auto-detect
         }
         Language = "en"
         CorruptedFileAction = @{
-            Action = "Delete"
+            Action = "Delete" # "Delete" or "Move"
             MovePath = "_CorruptedFiles"
         }
         DuplicateFileCheck = @{
@@ -137,7 +144,6 @@ function Get-String {
         return "[$Key NOT FOUND]"
     }
 }
-
 # --- Global Variables ---
 $corruptedFiles = @()
 $deletedFiles = @()
