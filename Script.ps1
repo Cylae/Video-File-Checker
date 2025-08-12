@@ -30,7 +30,7 @@ function Initialize-Script {
         $defaultConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $configPath -Encoding UTF8
     }
     try { $script:config = (Get-Content -Path $configPath -Raw | ConvertFrom-Json) } catch { Write-Host "FATAL: Error parsing 'config.json'." -ForegroundColor Red; exit }
-
+    
     $languages = @{
         en = @{
             cancel_q = "Press 'q' to cancel"; analysis_progress = "Progress";
@@ -86,19 +86,19 @@ function Write-ProgressBar {
     $width = $Host.UI.RawUI.WindowSize.Width
     # Ensure width is at least a minimum value to avoid errors
     if ($width -lt 20) { $width = 20 }
-
+    
     $percentText = " $($Percentage.ToString('F2'))% "
     # Ensure barWidth is not negative
-    $barWidth = $width - $percentText.Length - 2
+    $barWidth = $width - $percentText.Length - 2 
     if ($barWidth -lt 1) { $barWidth = 1 }
 
     $filledWidth = [int]($barWidth * ($Percentage / 100))
     $emptyWidth = $barWidth - $filledWidth
-
+    
     $bar = ('█' * $filledWidth) + ('▒' * $emptyWidth)
-
+    
     $output = "$percentText|$bar|"
-
+    
     [System.Console]::SetCursorPosition(0, $Line)
     # Clear the line first
     [System.Console]::Write(' ' * $width)
@@ -126,7 +126,7 @@ $jobs=@(); $recent=@(New-Object System.Collections.Generic.Queue[object](10)); $
 while ($completed -lt $videoFiles.Count) {
     if ($Host.UI.RawUI.KeyAvailable -and ('q' -eq $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown").Character)) { throw "User cancelled." }
     while (($jobs|? State -eq 'Running').Count -lt $config.performance.maxConcurrentJobs -and $q.Count -gt 0) {
-        $file = $q.Dequeue(); $sb = {
+        $file = $q.Dequeue(); $sb = { 
             param($path, $cmd, $doHash, $algo)
             $cmd = $cmd.Replace("{filePath}", $path); $out = & powershell -Command $cmd 2>&1
             $hash = if($doHash){(Get-FileHash $path -Algo $algo).Hash}else{$null}
@@ -162,7 +162,7 @@ if ($corruptedFiles.Count -gt 0) {
     $action = $config.fileHandler.actionOnCorruption; $actionPast = if($action -eq "Move"){"moved"}else{"deleted"}
     $actionFr = if($action -eq "Move"){"Déplacer"}else{"Supprimer"}; $actionPastFr = if($action -eq "Move"){"déplacé"}else{"supprimé"}
     $confirmMsg = ($lang.confirm_action -f ($config.language -eq 'fr' ? $actionFr : $action), $corruptedFiles.Count)
-
+    
     if (Test-UserConfirmation -Prompt $confirmMsg) {
         if ($action -eq "Move") { New-Item -Path $config.fileHandler.quarantinePath -Type Directory -ErrorAction SilentlyContinue | Out-Null }
         $corruptedFiles |% {
