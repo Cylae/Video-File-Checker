@@ -191,32 +191,69 @@ function Find-DuplicateFiles {
         [System.Array]$Files
     )
     Write-Host (Get-String -Key 'starting_duplicate_check') -ForegroundColor Cyan
-    $hashes = @{}
-    $checkedCount = 0
-    $totalCount = $Files.Count
 
-    foreach ($file in $Files) {
-        $checkedCount++
-        Write-Progress -Activity (Get-String -Key 'starting_duplicate_check') -Status ("{0} / {1}" -f $checkedCount, $totalCount) -PercentComplete (($checkedCount / $totalCount) * 100)
+    $maxConcurrentJobs = $config.Performance.MaxConcurrentJobs
+    $jobs = @()
+    $filesToHash = [System.Collections.Generic.Queue[object]]$Files
+    $totalFiles = $Files.Count
+    $jobsCompleted = 0
+    $hashResults = @()
 
-        try {
-            $hash = (Get-FileHash -Path $file.FullName -Algorithm SHA256 -ErrorAction Stop).Hash
-            if ($hashes.ContainsKey($hash)) {
-                $hashes[$hash] += $file.FullName
-            } else {
-                $hashes[$hash] = @($file.FullName)
-            }
-        } catch {
-            Write-Host "`nWarning: Could not calculate hash for '$($file.FullName)'. Error: $($_.Exception.Message)" -ForegroundColor Yellow
-            Write-Log "WARN: Could not calculate hash for '$($file.FullName)'. Error: $($_.Exception.Message)"
+    while ($jobsCompleted -lt $totalFiles) {
+        # Start new jobs
+        while (($jobs | Where-Object { $_.State -eq 'Running' }).Count -lt $maxConcurrentJobs -and $filesToHash.Count -gt 0) {
+            $file = $filesToHash.Dequeue()
+            $jobs += Start-Job -ScriptBlock {
+                param($filePath)
+                try {
+                    $hash = (Get-FileHash -Path $filePath -Algorithm SHA256 -ErrorAction Stop).Hash
+                    return [PSCustomObject]@{ FullName = $filePath; Hash = $hash; Error = $null }
+                } catch {
+                    return [PSCustomObject]@{ FullName = $filePath; Hash = $null; Error = $_.Exception.Message }
+                }
+            } -ArgumentList $file.FullName
         }
+
+        # Check for completed jobs
+        $completedJobs = $jobs | Where-Object { $_.State -eq 'Completed' }
+        if ($completedJobs) {
+            foreach ($job in $completedJobs) {
+                $jobsCompleted++
+                $result = Receive-Job -Job $job
+                if ($result) {
+                    if ($result.Error) {
+                        Write-Host "`nWarning: Could not calculate hash for '$($result.FullName)'. Error: $($result.Error)" -ForegroundColor Yellow
+                        Write-Log "WARN: Could not calculate hash for '$($result.FullName)'. Error: $($result.Error)"
+                    } else {
+                        $hashResults += $result
+                    }
+                }
+            }
+            $jobs = $jobs | Where-Object { $_.State -ne 'Completed' }
+            $completedJobs | Remove-Job
+        }
+
+        Write-Progress -Activity (Get-String -Key 'starting_duplicate_check') -Status ("{0} / {1}" -f $jobsCompleted, $totalFiles) -PercentComplete (($jobsCompleted / $totalFiles) * 100)
+        Start-Sleep -Milliseconds 100
     }
+
+    # Clean up any remaining jobs
+    Remove-Job -Job $jobs
     Write-Progress -Activity (Get-String -Key 'starting_duplicate_check') -Completed
 
-    # Filter for actual duplicates (more than one file per hash)
-    $duplicateSets = $hashes.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 }
+    # Process the collected hash results
+    $hashes = @{}
+    foreach ($result in $hashResults) {
+        if ($result.Hash -and $hashes.ContainsKey($result.Hash)) {
+            $hashes[$result.Hash] += $result.FullName
+        }
+        elseif ($result.Hash) {
+            $hashes[$result.Hash] = @($result.FullName)
+        }
+    }
 
-    # Store duplicates in the global variable for reporting
+    # Filter for actual duplicates
+    $duplicateSets = $hashes.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 }
     if ($duplicateSets) {
         foreach ($set in $duplicateSets) {
             $script:duplicateFiles[$set.Name] = $set.Value
@@ -478,9 +515,8 @@ if (-not (Test-Path -Path $folderPath)) {
 
 # Step 3: Get the list of video files
 Write-Host "[DEBUG] Step 3: Getting video file list..." -ForegroundColor Cyan
-$videoFiles = Get-ChildItem -Path $folderPath -File -Recurse | Where-Object {
-    $_.Extension -in $config.VideoExtensions
-}
+$includePatterns = $config.VideoExtensions.ForEach({ "*$_" })
+$videoFiles = Get-ChildItem -Path $folderPath -File -Recurse -Include $includePatterns
 Write-Host "[DEBUG] Found $($videoFiles.Count) video files." -ForegroundColor Cyan
 
 Write-Log "INFO: $($videoFiles.Count) video files were detected for analysis."
