@@ -210,7 +210,7 @@ function Select-Folder {
 trap {
     # This block runs if the user presses Ctrl+C or an error occurs
     Write-Host "`nStopping current tasks..." -ForegroundColor Red
-    $jobs | Stop-Job -Force -ErrorAction SilentlyContinue
+    $jobs | Stop-Job -ErrorAction SilentlyContinue
     $jobs | Wait-Job | Out-Null
     $jobs | Remove-Job
     Write-AllLogs
