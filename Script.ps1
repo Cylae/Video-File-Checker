@@ -2,6 +2,24 @@
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+# --- Configuration ---
+$config = @{
+    # List of video file extensions to check (add or remove as needed)
+    VideoExtensions = @('.mkv', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm');
+
+    # Download URLs for dependencies
+    FFmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-git-full.7z";
+    SevenZipUrl = "https://www.7-zip.org/a/7z2301-extra.zip";
+
+    # --- Performance Settings ---
+    # Set the maximum number of concurrent jobs.
+    # By default, it leaves one core free for system stability, with a max cap of 8.
+    MaxConcurrentJobs = [System.Math]::Min([int](((Get-CimInstance Win32_Processor).NumberOfLogicalProcessors) - 1), 8);
+}
+# Ensure at least one job runs if detection fails or on a single-core system
+if ($config.MaxConcurrentJobs -lt 1) { $config.MaxConcurrentJobs = 1 }
+
+
 # Define global variables for the script
 $corruptedFiles = @()
 $deletedFiles = @()
@@ -43,17 +61,15 @@ function Test-FFmpeg {
 # Function to install and configure FFmpeg
 function Install-FFmpeg {
     Write-Host ""
-    $installChoice = Read-Host -Prompt "Do you want the script to install FFmpeg for you? (Y/N)"
-    
-    if ($installChoice -eq 'o' -or $installChoice -eq 'O' -or $installChoice -eq 'y' -or $installChoice -eq 'Y') {
+    if (Test-UserConfirmation -Prompt "Do you want the script to install FFmpeg for you? (Y/N)") {
         Write-Log "INFO: User agreed to install FFmpeg."
         Write-Host "Starting FFmpeg installation..." -ForegroundColor Cyan
 
         try {
-            $downloadUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-git-full.7z"
+            $downloadUrl = $config.FFmpegUrl
             $tempDir = Join-Path -Path $env:TEMP -ChildPath "ffmpeg_install"
             $zipFile = Join-Path -Path $tempDir -ChildPath "ffmpeg.7z"
-            
+
             # --- Check and install 7-Zip if necessary ---
             $sevenZipExePath = $null
             try {
@@ -61,34 +77,34 @@ function Install-FFmpeg {
                 Write-Log "INFO: 7-Zip is already installed. Using the existing version."
             } catch {
                 Write-Host "7-Zip was not found on your system." -ForegroundColor Yellow
-                $sevenZipChoice = Read-Host -Prompt "Do you want to install a portable version of 7-Zip to extract FFmpeg? (Y/N)"
-                if ($sevenZipChoice -eq 'o' -or $sevenZipChoice -eq 'O' -or $sevenZipChoice -eq 'y' -or $sevenZipChoice -eq 'Y') {
+                if (Test-UserConfirmation -Prompt "Do you want to install a portable version of 7-Zip to extract FFmpeg? (Y/N)") {
                     Write-Log "INFO: User agreed to install portable 7-Zip."
-                    $sevenZipDownloadUrl = "https://www.7-zip.org/a/7z2301-extra.zip"
+                    $sevenZipDownloadUrl = $config.SevenZipUrl
                     $sevenZipZipFile = Join-Path -Path $tempDir -ChildPath "7z.zip"
-                    
+
                     Write-Host "Downloading portable 7-Zip..."
                     Invoke-WebRequest -Uri $sevenZipDownloadUrl -OutFile $sevenZipZipFile -ErrorAction Stop
-                    
-                    # Cannot use Expand-Archive as it doesn't always support complex .zip files
-                    # Using the 7z.exe executable for extraction
-                    & "Expand-Archive" -Path $sevenZipZipFile -DestinationPath $tempDir -Force
-                    $sevenZipExePath = Join-Path -Path $tempDir -ChildPath "7z.exe"
-                    
-                    if (-not (Test-Path $sevenZipExePath)) {
-                        throw "The 7z.exe executable was not found after extraction."
+
+                    # Use PowerShell's built-in Expand-Archive for .zip files.
+                    Expand-Archive -Path $sevenZipZipFile -DestinationPath $tempDir -Force
+
+                    # Search for the 7-Zip standalone executable ('7za.exe') in the extracted files.
+                    $sevenZipExePath = (Get-ChildItem -Path $tempDir -Recurse -Filter "7za.exe").FullName | Select-Object -First 1
+
+                    if (-not ($sevenZipExePath -and (Test-Path $sevenZipExePath))) {
+                        throw "The '7za.exe' executable was not found after extraction."
                     }
                 } else {
                     Write-Host "Installation cancelled. The script cannot continue." -ForegroundColor Yellow
                     return $false
                 }
             }
-            
+
             # Create the temporary folder
             if (-not (Test-Path $tempDir)) {
                 New-Item -Path $tempDir -ItemType Directory -ErrorAction Stop | Out-Null
             }
-            
+
             Write-Host "Downloading FFmpeg from '$downloadUrl'..."
             Invoke-WebRequest -Uri $downloadUrl -OutFile $zipFile -ErrorAction Stop
 
@@ -98,7 +114,7 @@ function Install-FFmpeg {
             # Find the 'bin' folder after extraction
             $extractedDir = Get-ChildItem -Path $tempDir -Directory | Where-Object { $_.Name -like "ffmpeg*" }
             $binPath = Join-Path -Path $extractedDir.FullName -ChildPath "bin"
-            
+
             if (Test-Path $binPath) {
                 Write-Host "Updating the PATH environment variable..."
                 # Get the current value of the user's PATH variable
@@ -142,14 +158,32 @@ function Truncate-Path {
     if ($Path.Length -gt $MaxLength) {
         $startLength = [int]($MaxLength / 2) - 2 # Start size, -2 for the ...
         $endLength = $MaxLength - $startLength - 3 # End size, -3 for the ... and the space
-        
+
         $start = $Path.Substring(0, $startLength)
         $end = $Path.Substring($Path.Length - $endLength)
-        
+
         return "$start...$end"
     }
-    
+
     return $Path
+}
+
+# Function to get a confirmation from the user (Y/N)
+function Test-UserConfirmation {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Prompt
+    )
+    while ($true) {
+        $choice = Read-Host -Prompt $Prompt
+        if ($choice -match '^(y|o|yes|oui)$') {
+            return $true
+        }
+        if ($choice -match '^(n|no|non)$') {
+            return $false
+        }
+        Write-Host "Invalid input. Please enter 'Y' or 'N'." -ForegroundColor Yellow
+    }
 }
 
 # Function to open a folder selection window
@@ -160,9 +194,9 @@ function Select-Folder {
     $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
     $dialog.Description = "Select the folder to analyze."
     $dialog.ShowNewFolderButton = $true
-    
+
     $result = $dialog.ShowDialog()
-    
+
     if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
         return $dialog.SelectedPath
     } else {
@@ -176,7 +210,7 @@ function Select-Folder {
 trap {
     # This block runs if the user presses Ctrl+C or an error occurs
     Write-Host "`nStopping current tasks..." -ForegroundColor Red
-    $jobs | Stop-Job -Force -ErrorAction SilentlyContinue
+    $jobs | Stop-Job -ErrorAction SilentlyContinue
     $jobs | Wait-Job | Out-Null
     $jobs | Remove-Job
     Write-AllLogs
@@ -193,9 +227,7 @@ Write-Host "Checking for existing FFmpeg processes..." -ForegroundColor White
 $ffmpegProcesses = Get-Process -Name "ffmpeg" -ErrorAction SilentlyContinue
 if ($ffmpegProcesses) {
     Write-Host "Warning: $($ffmpegProcesses.Count) 'ffmpeg.exe' processes were found running." -ForegroundColor Yellow
-    $userChoice = Read-Host -Prompt "Do you want to stop these processes to ensure the script runs correctly? (Y/N)"
-    
-    if ($userChoice -eq 'o' -or $userChoice -eq 'O' -or $userChoice -eq 'y' -or $userChoice -eq 'Y') {
+    if (Test-UserConfirmation -Prompt "Do you want to stop these processes to ensure the script runs correctly? (Y/N)") {
         Write-Host "Stopping FFmpeg processes..." -ForegroundColor Cyan
         Stop-Process -Name "ffmpeg" -Force -ErrorAction SilentlyContinue
         Write-Host "Processes stopped." -ForegroundColor Green
@@ -241,8 +273,8 @@ if (-not (Test-Path -Path $folderPath)) {
 }
 
 # Step 3: Get the list of video files
-$videoFiles = Get-ChildItem -Path $folderPath -File -Recurse | Where-Object { 
-    $_.Extension -in ('.mkv', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm') 
+$videoFiles = Get-ChildItem -Path $folderPath -File -Recurse | Where-Object {
+    $_.Extension -in $config.VideoExtensions
 }
 
 Write-Log "INFO: $($videoFiles.Count) video files were detected for analysis."
@@ -263,12 +295,8 @@ $host.ui.rawui.backgroundcolor = "DarkBlue"
 $host.ui.rawui.foregroundcolor = "White"
 Clear-Host
 
-# Automatically detect the number of logical CPU cores
-$logicalCores = (Get-CimInstance Win32_Processor).NumberOfLogicalProcessors
-# Set the maximum number of concurrent jobs, leaving one core free, with a cap of 8
-$maxConcurrentJobs = [System.Math]::Min([int]($logicalCores - 1), 8)
-# Ensure at least one job runs
-if ($maxConcurrentJobs -lt 1) { $maxConcurrentJobs = 1 }
+# Get the maximum number of concurrent jobs from the config
+$maxConcurrentJobs = $config.MaxConcurrentJobs
 
 # Array to store ongoing jobs and recently completed files
 $jobs = @()
@@ -297,7 +325,7 @@ while ($jobsCompleted -lt $totalFiles) {
         $file = $filesToAnalyze.Dequeue()
         $jobs += Start-Job -ScriptBlock {
             param($filePath)
-            
+
             # Start the check with FFmpeg
             $result = & "ffmpeg" -v error -i "$filePath" -f null - 2>&1
             $isCorrupted = (-not [string]::IsNullOrWhiteSpace($result))
@@ -311,57 +339,57 @@ while ($jobsCompleted -lt $totalFiles) {
         } -ArgumentList $file.FullName
     }
 
-    # Retrieve completed jobs
-    $completedJobs = $jobs | Where-Object { $_.State -eq 'Completed' -and -not $_.HasProcessed }
-    
-    # Process the results of the completed jobs
-    foreach ($job in $completedJobs) {
-        $jobsCompleted++
-        
-        # CHANGEMENT CLÉ : Utiliser l'idiome `$null = $result = ...` pour capturer la sortie du job
-        # et s'assurer que rien n'est affiché dans la console.
-        $null = $result = $job | Receive-Job -Keep
-        
-        # Add result to the recent files queue, keeping the size capped
-        if ($recentlyAnalyzedFiles.Count -ge $listCount) {
-            $recentlyAnalyzedFiles.Dequeue()
+    # Check for completed jobs
+    $completedJobs = $jobs | Where-Object { $_.State -eq 'Completed' }
+
+    if ($completedJobs) {
+        foreach ($job in $completedJobs) {
+            $jobsCompleted++
+
+            $null = $result = $job | Receive-Job -Keep
+
+            # Add result to the recent files queue, keeping the size capped
+            if ($recentlyAnalyzedFiles.Count -ge $listCount) {
+                $recentlyAnalyzedFiles.Dequeue()
+            }
+            $recentlyAnalyzedFiles.Enqueue($result)
+
+            # Write to log
+            if ($result.IsCorrupted) {
+                $corruptedFiles += $result.FullName
+                Write-Log "CORRUPTED: The file '$($result.FullName)' appears to be corrupted. Error: $($result.FFmpegOutput)"
+            }
+            else {
+                Write-Log "OK: The file '$($result.FullName)' is valid."
+            }
         }
-        $recentlyAnalyzedFiles.Enqueue($result)
-        
-        # Write to log
-        if ($result.IsCorrupted) {
-            $corruptedFiles += $result.FullName
-            Write-Log "CORRUPTED: The file '$($result.FullName)' appears to be corrupted. Error: $($result.FFmpegOutput)"
-        }
-        else {
-            Write-Log "OK: The file '$($result.FullName)' is valid."
-        }
-        
-        # Mark the job as processed
-        $job | Add-Member -MemberType NoteProperty -Name HasProcessed -Value $true -Force
+
+        # Remove the completed jobs from the main list and clean them up from memory
+        $jobs = $jobs | Where-Object { $_.State -ne 'Completed' }
+        $completedJobs | Remove-Job
     }
-    
+
     # --- UI Refresh Section without flickering ---
     # Update progress bar
     $progressPercentage = ($jobsCompleted / $totalFiles) * 100
     $progressText = "Progress: $([math]::Round($progressPercentage, 2))% - $jobsCompleted of $totalFiles files analyzed "
-    
+
     # Update spinner
     $spinnerIndex = ($spinnerIndex + 1) % $spinner.Count
     $spinnerChar = $spinner[$spinnerIndex]
-    
+
     [System.Console]::SetCursorPosition(0, $progressLine)
     [System.Console]::Write($progressText + $spinnerChar + (" " * ($consoleWidth - $progressText.Length - 1)))
-    
+
     # Update the list of recently analyzed files
     $i = 0
     $recentlyAnalyzedFiles | ForEach-Object {
         $statusText = if ($_.IsCorrupted) { "[Corrupted]" } else { "[Not corrupted]" }
         $foregroundColor = if ($_.IsCorrupted) { "Red" } else { "Green" }
-        
+
         $truncatedPath = Truncate-Path -Path $_.FullName -MaxLength ($consoleWidth - ($statusText.Length + 2))
         $output = "$statusText $truncatedPath"
-        
+
         [System.Console]::SetCursorPosition(0, $listStartLine + $i)
         $host.ui.rawui.foregroundcolor = $foregroundColor
         [System.Console]::Write($output + (" " * ($consoleWidth - $output.Length)))
@@ -395,52 +423,50 @@ Write-Host "Corrupted files detected: $($corruptedFiles.Count)"
 # Interactive deletion
 if ($corruptedFiles.Count -gt 0) {
     Write-Host ""
-    Write-Host "List of corrupted files: " -ForegroundColor Red
-    
+    Write-Host "List of corrupted files found: " -ForegroundColor Red
+    $corruptedFiles | ForEach-Object { Write-Host " - $_" }
+
+    Write-Host ""
+    Write-Host "WARNING: The action below is irreversible." -ForegroundColor Yellow
+
     $fileActions = @{}
-    foreach ($file in $corruptedFiles) {
-        Write-Host ""
-        Write-Host "Do you want to delete the following corrupted file?" -ForegroundColor Yellow
-        Write-Host "-> $file"
-        $deleteChoice = Read-Host -Prompt "Delete this file? (Y/N)"
-        
-        if ($deleteChoice -eq 'o' -or $deleteChoice -eq 'O' -or $deleteChoice -eq 'y' -or $deleteChoice -eq 'Y') {
+    if (Test-UserConfirmation -Prompt "Do you want to PERMANENTLY DELETE all $($corruptedFiles.Count) listed files? (Y/N)") {
+        foreach ($file in $corruptedFiles) {
             try {
+                Write-Host "Deleting '$file'..." -ForegroundColor Cyan
                 Remove-Item -Path $file -Recurse -Force -ErrorAction Stop
                 $deletedFiles += $file
                 $fileActions[$file] = "[Deleted]"
-                Write-Host "SUCCESS: '$file' was moved to the recycle bin." -ForegroundColor Green
-                Write-Log "SUCCESS: '$file' was moved to the recycle bin."
+                Write-Log "SUCCESS: '$file' was permanently deleted."
             } catch {
                 $fileActions[$file] = "[Failed to delete]"
                 Write-Host "Error deleting '$file': $($_.Exception.Message)" -ForegroundColor Red
                 Write-Log "ERROR: Failed to delete '$file': $($_.Exception.Message)"
             }
         }
-        else {
+        Write-Log "INFO: User chose to delete files. Summary: $($deletedFiles.Count) of $($corruptedFiles.Count) corrupted files were deleted."
+    } else {
+        Write-Host "Deletion cancelled. No files were deleted." -ForegroundColor Cyan
+        Write-Log "INFO: User chose not to delete any files."
+        # Populate actions for the report
+        foreach ($file in $corruptedFiles) {
             $fileActions[$file] = "[Not Deleted]"
-            Write-Host "The file '$file' was not deleted." -ForegroundColor Cyan
-            Write-Log "INFO: User chose not to delete the file '$file'."
         }
     }
-    
+
     # Final summary with table
     Write-Host ""
-    Write-Host "Deletion operation completed."
-    Write-Host "Summary of corrupted files:"
+    Write-Host "--- Deletion Summary ---"
     Write-Host ""
-    
-    # Create and display a formatted table
+
     $table = $corruptedFiles | ForEach-Object {
         [PSCustomObject]@{
             Status = $fileActions[$_]
             Path = $_
         }
     }
-    
+
     $table | Format-Table -AutoSize
-    
-    Write-Log "INFO: Final summary: $($deletedFiles.Count) files were deleted out of $($corruptedFiles.Count) corrupted files."
 } else {
     Write-Host "No corrupted files were found." -ForegroundColor Green
     Write-Log "INFO: No corrupted files were found."
