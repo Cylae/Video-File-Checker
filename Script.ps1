@@ -156,6 +156,13 @@ $duplicateFiles = @{}
 $logBuffer = [System.Collections.Generic.List[string]]::new()
 
 # --- Functions ---
+# Function to write to a dedicated debug log
+function Write-DebugLog {
+    param([string]$Message)
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
+    $logLine = "[$timestamp] $Message"
+    Add-Content -Path (Join-Path -Path $PSScriptRoot -ChildPath "debug_log.txt") -Value $logLine
+}
 
 # Function to show the script banner
 function Show-Banner {
@@ -415,6 +422,12 @@ trap {
 # --- End of interruption and error handling block ---
 
 # --- Main Script ---
+# Clear old debug log
+$debugLogPath = Join-Path -Path $PSScriptRoot -ChildPath "debug_log.txt"
+if (Test-Path $debugLogPath) {
+    Remove-Item $debugLogPath
+}
+
 Show-Banner
 
 # Step 0: Check for existing FFmpeg processes
@@ -526,8 +539,10 @@ Write-Host (Get-String -Key 'recently_analyzed_files')
 
 # Main loop
 while ($jobsCompleted -lt $totalFiles) {
+    Write-DebugLog "Loop start. Jobs completed: $jobsCompleted / $totalFiles. Running jobs: ($($jobs | Where-Object { $_.State -eq 'Running' }).Count)"
     # --- Graceful cancellation ---
     if ($Host.UI.RawUI.KeyAvailable -and ($Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown").Character -eq 'q')) {
+        Write-DebugLog "'q' key pressed. Breaking loop."
         Write-Host "`n$((Get-String -Key 'q_pressed_to_cancel'))" -ForegroundColor Yellow
         break
     }
@@ -535,6 +550,7 @@ while ($jobsCompleted -lt $totalFiles) {
     # Start new jobs if the number of running jobs is less than the maximum
     while (($jobs | Where-Object { $_.State -eq 'Running' }).Count -lt $maxConcurrentJobs -and $filesToAnalyze.Count -gt 0) {
         $file = $filesToAnalyze.Dequeue()
+        Write-DebugLog "Starting job for file: $($file.FullName)"
         $jobs += Start-Job -ScriptBlock {
             param($filePath, $ffmpegCommand)
 
@@ -556,11 +572,14 @@ while ($jobsCompleted -lt $totalFiles) {
     }
 
     # Check for completed jobs
+    Write-DebugLog "Checking for completed jobs."
     $completedJobs = $jobs | Where-Object { $_.State -eq 'Completed' }
 
     if ($completedJobs) {
+        Write-DebugLog "Found $($completedJobs.Count) completed jobs."
         foreach ($job in $completedJobs) {
             $jobsCompleted++
+            Write-DebugLog "Processing completed job for file: $($job.Name)"
 
             $result = Receive-Job -Job $job -Keep
 
@@ -581,41 +600,48 @@ while ($jobsCompleted -lt $totalFiles) {
         }
 
         # Remove the completed jobs from the main list and clean them up from memory
+        Write-DebugLog "Removing completed jobs from job list."
         $jobs = $jobs | Where-Object { $_.State -ne 'Completed' }
         $completedJobs | Remove-Job
     }
 
     # --- UI Refresh Section without flickering ---
-    # Update console width for responsive UI
-    $consoleWidth = $Host.UI.RawUI.WindowSize.Width
+    try {
+        Write-DebugLog "Starting UI Refresh section."
+        # Update console width for responsive UI
+        $consoleWidth = $Host.UI.RawUI.WindowSize.Width
 
-    # Update progress bar
-    $progressPercentage = ($jobsCompleted / $totalFiles) * 100
-    $progressText = (Get-String -Key 'progress_text' -FormatArgs ([math]::Round($progressPercentage, 2)), $jobsCompleted, $totalFiles)
+        # Update progress bar
+        $progressPercentage = ($jobsCompleted / $totalFiles) * 100
+        $progressText = (Get-String -Key 'progress_text' -FormatArgs ([math]::Round($progressPercentage, 2)), $jobsCompleted, $totalFiles)
 
-    # Update spinner
-    $spinnerIndex = ($spinnerIndex + 1) % $spinner.Count
-    $spinnerChar = $spinner[$spinnerIndex]
+        # Update spinner
+        $spinnerIndex = ($spinnerIndex + 1) % $spinner.Count
+        $spinnerChar = $spinner[$spinnerIndex]
 
-    [System.Console]::SetCursorPosition(0, $progressLine)
-    [System.Console]::Write($progressText + $spinnerChar + (" " * ($consoleWidth - $progressText.Length - 1)))
+        [System.Console]::SetCursorPosition(0, $progressLine)
+        [System.Console]::Write($progressText + $spinnerChar + (" " * ($consoleWidth - $progressText.Length - 1)))
 
-    # Update the list of recently analyzed files
-    $i = 0
-    $recentlyAnalyzedFiles | ForEach-Object {
-        $statusText = if ($_.IsCorrupted) { (Get-String -Key 'status_corrupted') } else { (Get-String -Key 'status_not_corrupted') }
-        $foregroundColor = if ($_.IsCorrupted) { "Red" } else { "Green" }
+        # Update the list of recently analyzed files
+        $i = 0
+        $recentlyAnalyzedFiles | ForEach-Object {
+            $statusText = if ($_.IsCorrupted) { (Get-String -Key 'status_corrupted') } else { (Get-String -Key 'status_not_corrupted') }
+            $foregroundColor = if ($_.IsCorrupted) { "Red" } else { "Green" }
 
-        $truncatedPath = Truncate-Path -Path $_.FullName -MaxLength ($consoleWidth - ($statusText.Length + 2))
-        $output = "$statusText $truncatedPath"
+            $truncatedPath = Truncate-Path -Path $_.FullName -MaxLength ($consoleWidth - ($statusText.Length + 2))
+            $output = "$statusText $truncatedPath"
 
-        [System.Console]::SetCursorPosition(0, $listStartLine + $i)
-        $host.ui.rawui.foregroundcolor = $foregroundColor
-        [System.Console]::Write($output + (" " * ($consoleWidth - $output.Length)))
-        $i++
+            [System.Console]::SetCursorPosition(0, $listStartLine + $i)
+            $host.ui.rawui.foregroundcolor = $foregroundColor
+            [System.Console]::Write($output + (" " * ($consoleWidth - $output.Length)))
+            $i++
+        }
+        # Restore default color for other text
+        $host.ui.rawui.foregroundcolor = "White"
+        Write-DebugLog "UI Refresh section complete."
+    } catch {
+        Write-DebugLog "CRITICAL: Error during UI Refresh. Error: $($_.Exception.ToString())"
     }
-    # Restore default color for other text
-    $host.ui.rawui.foregroundcolor = "White"
     # --- End UI Refresh Section ---
 
     # Short pause to avoid overwhelming the processor
