@@ -452,6 +452,7 @@ Write-Host ""
 Write-Host (Get-String -Key 'folder_select_window_prompt')
 $folderPath = Select-Folder
 Write-Host ("{0} {1}" -f (Get-String -Key 'selected_folder'), $folderPath)
+Write-Host "[DEBUG] Folder selection complete." -ForegroundColor Cyan
 
 # Check if a path was selected
 if ([string]::IsNullOrEmpty($folderPath)) {
@@ -468,9 +469,11 @@ if (-not (Test-Path -Path $folderPath)) {
 }
 
 # Step 3: Get the list of video files
+Write-Host "[DEBUG] Step 3: Getting video file list..." -ForegroundColor Cyan
 $videoFiles = Get-ChildItem -Path $folderPath -File -Recurse | Where-Object {
     $_.Extension -in $config.VideoExtensions
 }
+Write-Host "[DEBUG] Found $($videoFiles.Count) video files." -ForegroundColor Cyan
 
 Write-Log "INFO: $($videoFiles.Count) video files were detected for analysis."
 
@@ -482,10 +485,13 @@ if ($videoFiles.Count -eq 0) {
 
 # Step 3.5: Optional - Find duplicate files
 if ($config.DuplicateFileCheck.Enabled) {
+    Write-Host "[DEBUG] Step 3.5: Finding duplicate files..." -ForegroundColor Cyan
     Find-DuplicateFiles -Files $videoFiles
+    Write-Host "[DEBUG] Duplicate file check complete." -ForegroundColor Cyan
 }
 
 # Step 4: Parallel analysis with dynamic CPU usage control and enhanced UI
+Write-Host "[DEBUG] Step 4: Preparing for parallel analysis..." -ForegroundColor Cyan
 Clear-Host # Clear the window for a clean start
 Write-Host (Get-String -Key 'analysis_in_progress')
 Write-Log "INFO: Starting parallel analysis via jobs."
