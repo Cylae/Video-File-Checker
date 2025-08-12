@@ -64,7 +64,16 @@ function Get-DefaultConfig {
                 Intel_GPU = 'ffmpeg -hwaccel qsv -i "{filePath}" -f null -'
             }
         }
-        SevenZipUrl = 'https://www.7-zip.org/a/7z2301-extra.zip'
+        SevenZipUrl = 'https://www.7-zip.org/a/7z2301-extra.zip
+            DownloadUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-git-full.7z"
+            CustomCommand = "ffmpeg -v error -i \"{filePath}\" -f null -"
+            Examples_CustomCommands = @{
+                NVIDIA_GPU = "ffmpeg -hwaccel cuda -i \"{filePath}\" -f null -"
+                AMD_GPU = "ffmpeg -hwaccel amf -i \"{filePath}\" -f null -"
+                Intel_GPU = "ffmpeg -hwaccel qsv -i \"{filePath}\" -f null -"
+            }
+        }
+        SevenZipUrl = "https://www.7-zip.org/a/7z2301-extra.zip"
         Performance = @{
             MaxConcurrentJobs = 0 # 0 means auto-detect
         }
