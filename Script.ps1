@@ -203,6 +203,7 @@ function Find-DuplicateFiles {
         # Start new jobs
         while (($jobs | Where-Object { $_.State -eq 'Running' }).Count -lt $maxConcurrentJobs -and $filesToHash.Count -gt 0) {
             $file = $filesToHash.Dequeue()
+
             $jobs += Start-Job -Name $file.FullName -ScriptBlock {
                 param($filePath)
                 try {
