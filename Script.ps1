@@ -203,7 +203,8 @@ function Find-DuplicateFiles {
         # Start new jobs
         while (($jobs | Where-Object { $_.State -eq 'Running' }).Count -lt $maxConcurrentJobs -and $filesToHash.Count -gt 0) {
             $file = $filesToHash.Dequeue()
-            $jobs += Start-Job -ScriptBlock {
+
+            $jobs += Start-Job -Name $file.FullName -ScriptBlock {
                 param($filePath)
                 try {
                     $hash = (Get-FileHash -Path $filePath -Algorithm SHA256 -ErrorAction Stop).Hash
@@ -214,23 +215,29 @@ function Find-DuplicateFiles {
             } -ArgumentList $file.FullName
         }
 
-        # Check for completed jobs
-        $completedJobs = $jobs | Where-Object { $_.State -eq 'Completed' }
-        if ($completedJobs) {
-            foreach ($job in $completedJobs) {
+        # Check for finished jobs (Completed or Failed)
+        $finishedJobs = $jobs | Where-Object { $_.State -in @('Completed', 'Failed') }
+        if ($finishedJobs) {
+            foreach ($job in $finishedJobs) {
                 $jobsCompleted++
-                $result = Receive-Job -Job $job
-                if ($result) {
-                    if ($result.Error) {
-                        Write-Host "`nWarning: Could not calculate hash for '$($result.FullName)'. Error: $($result.Error)" -ForegroundColor Yellow
-                        Write-Log "WARN: Could not calculate hash for '$($result.FullName)'. Error: $($result.Error)"
-                    } else {
-                        $hashResults += $result
+                if ($job.State -eq 'Failed') {
+                    $reason = $job.ChildJobs[0].JobStateInfo.Reason.Message
+                    Write-Host "`nWarning: Could not calculate hash for '$($job.Name)'. The job failed. Reason: $reason" -ForegroundColor Yellow
+                    Write-Log "WARN: Hash job for '$($job.Name)' failed. Reason: $reason"
+                } else { # Completed
+                    $result = Receive-Job -Job $job
+                    if ($result) {
+                        if ($result.Error) {
+                            Write-Host "`nWarning: Could not calculate hash for '$($result.FullName)'. Error: $($result.Error)" -ForegroundColor Yellow
+                            Write-Log "WARN: Could not calculate hash for '$($result.FullName)'. Error: $($result.Error)"
+                        } else {
+                            $hashResults += $result
+                        }
                     }
                 }
             }
-            $jobs = $jobs | Where-Object { $_.State -ne 'Completed' }
-            $completedJobs | Remove-Job
+            $jobs = $jobs | Where-Object { $_.State -notin @('Completed', 'Failed') }
+            $finishedJobs | Remove-Job
         }
 
         Write-Progress -Activity (Get-String -Key 'starting_duplicate_check') -Status ("{0} / {1}" -f $jobsCompleted, $totalFiles) -PercentComplete (($jobsCompleted / $totalFiles) * 100)
@@ -579,7 +586,7 @@ while ($jobsCompleted -lt $totalFiles) {
     # Start new jobs if the number of running jobs is less than the maximum
     while (($jobs | Where-Object { $_.State -eq 'Running' }).Count -lt $maxConcurrentJobs -and $filesToAnalyze.Count -gt 0) {
         $file = $filesToAnalyze.Dequeue()
-        $jobs += Start-Job -ScriptBlock {
+        $jobs += Start-Job -Name $file.FullName -ScriptBlock {
             param($filePath, $ffmpegCommand)
 
             # Build the command by replacing the placeholder
@@ -599,34 +606,45 @@ while ($jobsCompleted -lt $totalFiles) {
         } -ArgumentList @($file.FullName, $config.FFmpegSettings.CustomCommand)
     }
 
-    # Check for completed jobs
-    $completedJobs = $jobs | Where-Object { $_.State -eq 'Completed' }
+    # Check for finished jobs (Completed or Failed)
+    $finishedJobs = $jobs | Where-Object { $_.State -in @('Completed', 'Failed') }
 
-    if ($completedJobs) {
-        foreach ($job in $completedJobs) {
+    if ($finishedJobs) {
+        foreach ($job in $finishedJobs) {
             $jobsCompleted++
 
-            $result = Receive-Job -Job $job -Keep
+            if ($job.State -eq 'Failed') {
+                $reason = $job.ChildJobs[0].JobStateInfo.Reason.Message
+                $failedFile = $job.Name
+                Write-Log "ERROR: Analysis job for '$failedFile' failed. Reason: $reason"
+                $corruptedFiles += $failedFile
+                # Add a synthetic result to the UI queue to show the failure
+                $syntheticResult = [PSCustomObject]@{ FullName = $failedFile; IsCorrupted = $true; FFmpegOutput = $reason }
+                if ($recentlyAnalyzedFiles.Count -ge $listCount) { $recentlyAnalyzedFiles.Dequeue() }
+                $recentlyAnalyzedFiles.Enqueue($syntheticResult)
+            } else { # Completed
+                $result = Receive-Job -Job $job -Keep
 
-            # Add result to the recent files queue, keeping the size capped
-            if ($recentlyAnalyzedFiles.Count -ge $listCount) {
-                $recentlyAnalyzedFiles.Dequeue()
-            }
-            $recentlyAnalyzedFiles.Enqueue($result)
+                # Add result to the recent files queue, keeping the size capped
+                if ($recentlyAnalyzedFiles.Count -ge $listCount) {
+                    $recentlyAnalyzedFiles.Dequeue()
+                }
+                $recentlyAnalyzedFiles.Enqueue($result)
 
-            # Write to log
-            if ($result.IsCorrupted) {
-                $corruptedFiles += $result.FullName
-                Write-Log "CORRUPTED: The file '$($result.FullName)' appears to be corrupted. Error: $($result.FFmpegOutput)"
-            }
-            else {
-                Write-Log "OK: The file '$($result.FullName)' is valid."
+                # Write to log
+                if ($result.IsCorrupted) {
+                    $corruptedFiles += $result.FullName
+                    Write-Log "CORRUPTED: The file '$($result.FullName)' appears to be corrupted. Error: $($result.FFmpegOutput)"
+                }
+                else {
+                    Write-Log "OK: The file '$($result.FullName)' is valid."
+                }
             }
         }
 
-        # Remove the completed jobs from the main list and clean them up from memory
-        $jobs = $jobs | Where-Object { $_.State -ne 'Completed' }
-        $completedJobs | Remove-Job
+        # Remove the finished jobs from the main list and clean them up from memory
+        $jobs = $jobs | Where-Object { $_.State -notin @('Completed', 'Failed') }
+        $finishedJobs | Remove-Job
     }
 
     # --- UI Refresh Section without flickering ---
